@@ -1,9 +1,10 @@
 #[cfg(test)]
 mod tests {
     use crate::*;
+    // Note: In test we don't use System because we want each test to initialize the DB on their own
     #[test]
     fn create_job_posting() {
-        let mut system = HRSystem::new();
+        let system = HRSystem::new();
         let job_posting_id = system.create_job_posting("Engineer".to_string()).unwrap();
         assert_eq!(
             system.get_job_by_id(&job_posting_id).unwrap().name,
@@ -13,7 +14,7 @@ mod tests {
 
     #[test]
     fn register_candidate() {
-        let mut system = HRSystem::new();
+        let system = HRSystem::new();
         let _ = system.register_candidate("test".to_string(), "test".to_string());
         // Can login with correct password
         let token = system.login(&"test".to_string(), &"test".to_string());
@@ -25,7 +26,7 @@ mod tests {
 
     #[test]
     fn candidate_process() {
-        let mut system = HRSystem::new();
+        let system = HRSystem::new();
         let job_posting_id = system.create_job_posting("Engineer".to_string()).unwrap();
         let _ = system.register_candidate("test".to_string(), "test".to_string());
         let _ = system.register_candidate("test1".to_string(), "test".to_string());

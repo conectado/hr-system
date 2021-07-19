@@ -1,11 +1,66 @@
+use lazy_static::lazy_static;
 mod tests;
+use std::sync::Mutex;
 
 pub type Id = i64;
 pub type Token = u128;
 
-// TODO: Make singleton
-pub struct HRSystem {
+struct HRSystem {
     store: DBStore,
+}
+
+lazy_static! {
+    // Note: The Mutex is needed because the SQL library I'm using is not thread safe
+    static ref SYSTEM: Mutex<HRSystem> = Mutex::new(HRSystem::new());
+}
+
+pub struct System;
+
+impl System {
+    pub fn list_jobs() -> SQLResult<Vec<Job>> {
+        SYSTEM.lock().unwrap().list_jobs()
+    }
+
+    pub fn create_job_posting(name: String) -> SQLResult<Id> {
+        SYSTEM.lock().unwrap().create_job_posting(name)
+    }
+
+    pub fn get_job_by_id(id: &Id) -> Option<Job> {
+        SYSTEM.lock().unwrap().get_job_by_id(id)
+    }
+
+    pub fn register_candidate(user: String, password: String) -> SQLResult<usize> {
+        SYSTEM.lock().unwrap().register_candidate(user, password)
+    }
+
+    // TODO: Actually rerturn a token
+    pub fn login(user: &String, password: &String) -> Option<LoggedUser> {
+        SYSTEM.lock().unwrap().login(user, password)
+    }
+
+    pub fn apply(
+        user: &String,
+        token: Token,
+        candidate_id: Id,
+        job_id: Id,
+    ) -> Result<Id, ErrorVariant> {
+        SYSTEM
+            .lock()
+            .unwrap()
+            .apply(user, token, candidate_id, job_id)
+    }
+
+    pub fn interview(user: String, job_id: Id) -> Result<(), ErrorVariant> {
+        SYSTEM.lock().unwrap().interview(user, job_id)
+    }
+
+    pub fn approve(user: String, job_id: Id) -> Result<(), ErrorVariant> {
+        SYSTEM.lock().unwrap().approve(user, job_id)
+    }
+
+    pub fn reject(user: String, job_id: Id) -> Result<(), ErrorVariant> {
+        SYSTEM.lock().unwrap().reject(user, job_id)
+    }
 }
 
 pub enum ErrorVariant {
@@ -14,7 +69,6 @@ pub enum ErrorVariant {
 }
 
 // TODO: Add permisioned users(For create_job_posting, and anyhing regarding advancing a process)
-// TODO: Error types
 impl HRSystem {
     pub fn new() -> Self {
         Self {
@@ -26,15 +80,15 @@ impl HRSystem {
         self.store.list_jobs()
     }
 
-    pub fn create_job_posting(&mut self, name: String) -> SQLResult<Id> {
+    pub fn create_job_posting(&self, name: String) -> SQLResult<Id> {
         self.store.add_job_posting(&Job::new(name))
     }
 
-    pub fn get_job_by_id(&mut self, id: &Id) -> Option<Job> {
+    pub fn get_job_by_id(&self, id: &Id) -> Option<Job> {
         self.store.get_job_by_id(*id).ok()
     }
 
-    pub fn register_candidate(&mut self, user: String, password: String) -> SQLResult<usize> {
+    pub fn register_candidate(&self, user: String, password: String) -> SQLResult<usize> {
         self.store.add_candidate(&Candidate {
             id: Default::default(),
             user,
@@ -69,7 +123,7 @@ impl HRSystem {
     }
 
     pub fn apply(
-        &mut self,
+        &self,
         user: &String,
         token: Token,
         candidate_id: Id,
@@ -96,12 +150,7 @@ impl HRSystem {
         }
     }
 
-    fn advance_process<F>(
-        &mut self,
-        user: String,
-        job_id: Id,
-        advance: F,
-    ) -> Result<(), ErrorVariant>
+    fn advance_process<F>(&self, user: String, job_id: Id, advance: F) -> Result<(), ErrorVariant>
     where
         F: FnOnce(Candidacy) -> Candidacy,
     {
@@ -129,11 +178,11 @@ impl HRSystem {
         }
     }
 
-    pub fn interview(&mut self, user: String, job_id: Id) -> Result<(), ErrorVariant> {
+    pub fn interview(&self, user: String, job_id: Id) -> Result<(), ErrorVariant> {
         self.advance_process(user, job_id, |s| s.interview())
     }
 
-    pub fn approve(&mut self, user: String, job_id: Id) -> Result<(), ErrorVariant> {
+    pub fn approve(&self, user: String, job_id: Id) -> Result<(), ErrorVariant> {
         let candidate = self
             .store
             .get_candidate(&user)
@@ -163,7 +212,7 @@ impl HRSystem {
         }
     }
 
-    pub fn reject(&mut self, user: String, job_id: Id) -> Result<(), ErrorVariant> {
+    pub fn reject(&self, user: String, job_id: Id) -> Result<(), ErrorVariant> {
         self.advance_process(user, job_id, |s| s.reject())
     }
 }
@@ -244,9 +293,6 @@ struct Application {
     pub state: Candidacy,
 }
 
-// The applicant information in the following types is already conveyed in the applicants
-// HashMap, might get rid of it later but won't think too much for now since this will be probably different
-// whence I add the DB.
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub struct AppliedApplication;
 
@@ -374,6 +420,7 @@ impl DBStore {
         )
         .unwrap();
 
+        // TODO: Store hash with salt instead of plain text
         conn.execute(
             "
             create table if not exists candidates (
