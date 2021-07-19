@@ -7,8 +7,12 @@ mod tests {
         let system = HRSystem::new();
         let job_posting_id = system.create_job_posting("Engineer".to_string()).unwrap();
         assert_eq!(
-            system.get_job_by_id(&job_posting_id).unwrap().name,
+            system.list_jobs().unwrap().first().unwrap().name,
             "Engineer".to_string()
+        );
+        assert_eq!(
+            system.list_jobs().unwrap().first().unwrap().id,
+            job_posting_id
         );
     }
 
