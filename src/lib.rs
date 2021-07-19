@@ -8,6 +8,11 @@ pub struct HRSystem {
     store: DBStore,
 }
 
+pub enum ErrorVariant {
+    SQL(rusqlite::Error),
+    Error(Box<dyn std::error::Error>),
+}
+
 // TODO: Add permisioned users(For create_job_posting, and anyhing regarding advancing a process)
 // TODO: Error types
 impl HRSystem {
@@ -17,11 +22,11 @@ impl HRSystem {
         }
     }
 
-    pub fn list_jobs(&self) -> Result<Vec<Job>> {
+    pub fn list_jobs(&self) -> SQLResult<Vec<Job>> {
         self.store.list_jobs()
     }
 
-    pub fn create_job_posting(&mut self, name: String) -> Result<Id> {
+    pub fn create_job_posting(&mut self, name: String) -> SQLResult<Id> {
         self.store.add_job_posting(&Job::new(name))
     }
 
@@ -29,15 +34,12 @@ impl HRSystem {
         self.store.get_job_by_id(*id).ok()
     }
 
-    pub fn register_candidate(&mut self, user: String, password: String) -> Result<(), ()> {
-        self.store
-            .add_candidate(&Candidate {
-                id: Default::default(),
-                user,
-                password,
-            })
-            .map(|_| ())
-            .map_err(|_| ())
+    pub fn register_candidate(&mut self, user: String, password: String) -> SQLResult<usize> {
+        self.store.add_candidate(&Candidate {
+            id: Default::default(),
+            user,
+            password,
+        })
     }
 
     // TODO: Actually rerturn a token
@@ -57,12 +59,12 @@ impl HRSystem {
         }
     }
 
-    fn check_token(_user: String, token: Token) -> Result<(), ()> {
+    fn check_token(_user: String, token: Token) -> Result<(), Box<dyn std::error::Error>> {
         // TODO: OFC, change this
         if token == 0 {
             Ok(())
         } else {
-            Err(())
+            Err("Wrong token".into())
         }
     }
 
@@ -72,14 +74,17 @@ impl HRSystem {
         token: Token,
         candidate_id: Id,
         job_id: Id,
-    ) -> Result<Id, ()> {
-        Self::check_token(user.clone(), token)?;
+    ) -> Result<Id, ErrorVariant> {
+        Self::check_token(user.clone(), token).map_err(|e| ErrorVariant::Error(e))?;
         // TODO: This would need to hold all candidates in memory
         // change this
-        let job = self.store.get_job_by_id(job_id).map_err(|_| ())?;
+        let job = self
+            .store
+            .get_job_by_id(job_id)
+            .map_err(|e| ErrorVariant::SQL(e))?;
 
         if job.state != JobState::Open {
-            Err(())
+            Err(ErrorVariant::Error("Job not open".into()))
         } else {
             self.store
                 .insert_application(&Application {
@@ -87,57 +92,78 @@ impl HRSystem {
                     candidate_id,
                     state: Candidacy::default(),
                 })
-                .map_err(|_| ())
+                .map_err(|e| ErrorVariant::SQL(e))
         }
     }
 
-    fn advance_process<F>(&mut self, user: String, job_id: Id, advance: F) -> Result<(), ()>
+    fn advance_process<F>(
+        &mut self,
+        user: String,
+        job_id: Id,
+        advance: F,
+    ) -> Result<(), ErrorVariant>
     where
         F: FnOnce(Candidacy) -> Candidacy,
     {
-        let job = self.store.get_job_by_id(job_id).map_err(|_| ())?;
+        let job = self
+            .store
+            .get_job_by_id(job_id)
+            .map_err(|e| ErrorVariant::SQL(e))?;
         if job.state != JobState::Open {
-            return Err(());
+            Err(ErrorVariant::Error("Job not open".into()))
         } else {
-            let candidate = self.store.get_candidate(&user).map_err(|_| ())?;
+            let candidate = self
+                .store
+                .get_candidate(&user)
+                .map_err(|e| ErrorVariant::SQL(e))?;
             let mut application = self
                 .store
                 .get_application(job_id, candidate.id)
-                .map_err(|_| ())?;
+                .map_err(|e| ErrorVariant::SQL(e))?;
             // TODO: Here if it doesn't change we could return an err that would save some operations
             application.state = advance(application.state);
             self.store
                 .update_application(&application)
                 .map(|_| ())
-                .map_err(|_| ())
+                .map_err(|e| ErrorVariant::SQL(e))
         }
     }
 
-    pub fn interview(&mut self, user: String, job_id: Id) -> Result<(), ()> {
+    pub fn interview(&mut self, user: String, job_id: Id) -> Result<(), ErrorVariant> {
         self.advance_process(user, job_id, |s| s.interview())
     }
 
-    pub fn approve(&mut self, user: String, job_id: Id) -> Result<(), ()> {
-        let candidate = self.store.get_candidate(&user).map_err(|_| ())?;
+    pub fn approve(&mut self, user: String, job_id: Id) -> Result<(), ErrorVariant> {
+        let candidate = self
+            .store
+            .get_candidate(&user)
+            .map_err(|e| ErrorVariant::SQL(e))?;
         if self.advance_process(user, job_id, |s| s.approve()).is_ok()
             && matches!(
                 self.store
                     .get_application(job_id, candidate.id)
-                    .map_err(|_| ())?
+                    .map_err(|e| ErrorVariant::SQL(e))?
                     .state,
                 Candidacy::Approved(_)
             )
         {
-            let mut job = self.store.get_job_by_id(job_id).map_err(|_| ())?;
+            let mut job = self
+                .store
+                .get_job_by_id(job_id)
+                .map_err(|e| ErrorVariant::SQL(e))?;
             job.state = JobState::Closed;
-            self.store.update_job_posting(&job).map_err(|_| ())?;
+            self.store
+                .update_job_posting(&job)
+                .map_err(|e| ErrorVariant::SQL(e))?;
             Ok(())
         } else {
-            Err(())
+            Err(ErrorVariant::Error(
+                "Job not Open or user not ready to be approved".into(),
+            ))
         }
     }
 
-    pub fn reject(&mut self, user: String, job_id: Id) -> Result<(), ()> {
+    pub fn reject(&mut self, user: String, job_id: Id) -> Result<(), ErrorVariant> {
         self.advance_process(user, job_id, |s| s.reject())
     }
 }
@@ -314,7 +340,7 @@ impl Candidacy {
     }
 }
 
-use rusqlite::{params, Connection, Result};
+use rusqlite::{params, Connection, Result as SQLResult};
 struct DBStore {
     conn: Connection,
 }
@@ -376,7 +402,7 @@ impl DBStore {
         conn
     }
 
-    fn get_application(&self, job_id: Id, candidate_id: Id) -> Result<Application> {
+    fn get_application(&self, job_id: Id, candidate_id: Id) -> SQLResult<Application> {
         self.conn.query_row(
             "SELECT state  FROM applications WHERE candidate_id = (?1) AND job_id = (?2)",
             [candidate_id, job_id],
@@ -389,7 +415,7 @@ impl DBStore {
             },
         )
     }
-    fn add_job_posting(&self, job: &Job) -> Result<Id> {
+    fn add_job_posting(&self, job: &Job) -> SQLResult<Id> {
         let state = job.state as u8;
         self.conn.execute(
             "INSERT INTO jobs (name, state) values (?1, ?2)",
@@ -399,7 +425,7 @@ impl DBStore {
         Ok(self.conn.last_insert_rowid())
     }
 
-    fn list_jobs(&self) -> Result<Vec<Job>> {
+    fn list_jobs(&self) -> SQLResult<Vec<Job>> {
         let mut stmt = self.conn.prepare(
             "SELECT jobs.id, jobs.name, jobs.state, applications.state, candidates.name
             FROM jobs
@@ -436,7 +462,7 @@ impl DBStore {
 
     // Note: This doesn't actually construct a Job because it doesn't contain the applicants
     // This, is more efficient since I never need the applicant when getting a job by ID.
-    fn get_job_by_id(&self, job_id: Id) -> Result<Job> {
+    fn get_job_by_id(&self, job_id: Id) -> SQLResult<Job> {
         self.conn.query_row(
             "SELECT name, state FROM jobs where id = (?1)",
             [job_id],
@@ -451,14 +477,14 @@ impl DBStore {
         )
     }
 
-    fn add_candidate(&self, candidate: &Candidate) -> Result<usize> {
+    fn add_candidate(&self, candidate: &Candidate) -> SQLResult<usize> {
         self.conn.execute(
             "INSERT INTO candidates (name, password) values (?1, ?2)",
             [&candidate.user, &candidate.password],
         )
     }
 
-    fn get_candidate(&self, candidate_name: &str) -> Result<Candidate> {
+    fn get_candidate(&self, candidate_name: &str) -> SQLResult<Candidate> {
         self.conn.query_row(
             "SELECT id, name, password FROM candidates WHERE name = (?1)",
             &[candidate_name],
@@ -472,7 +498,7 @@ impl DBStore {
         )
     }
 
-    fn update_job_posting(&self, job: &Job) -> Result<usize> {
+    fn update_job_posting(&self, job: &Job) -> SQLResult<usize> {
         let state = job.state as u8;
         self.conn.execute(
             "UPDATE jobs SET name = (?1), state = (?2) where id = (?3)",
@@ -480,7 +506,7 @@ impl DBStore {
         )
     }
 
-    fn insert_application(&self, application: &Application) -> Result<Id> {
+    fn insert_application(&self, application: &Application) -> SQLResult<Id> {
         let state: u8 = application.state.into();
         self.conn.execute(
             "INSERT INTO applications (job_id, candidate_id, state) values (?1, ?2, ?3)",
@@ -490,7 +516,7 @@ impl DBStore {
         Ok(self.conn.last_insert_rowid())
     }
 
-    fn update_application(&self, application: &Application) -> Result<usize> {
+    fn update_application(&self, application: &Application) -> SQLResult<usize> {
         let state: u8 = application.state.into();
         self.conn.execute(
             "UPDATE  applications SET state = (?3) WHERE job_id = (?1) AND candidate_id = (?2)",
