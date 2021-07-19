@@ -3,8 +3,8 @@ mod tests {
     use crate::*;
     #[test]
     fn create_job_posting() {
-        let mut system = HRSystem::<KVStorage<Id, Job>, KVStorage<String, Candidate>>::default();
-        let job_posting_id = system.create_job_posting("Engineer".to_string());
+        let mut system = HRSystem::new();
+        let job_posting_id = system.create_job_posting("Engineer".to_string()).unwrap();
         assert_eq!(
             system.get_job_by_id(&job_posting_id).unwrap().name,
             "Engineer".to_string()
@@ -13,7 +13,7 @@ mod tests {
 
     #[test]
     fn register_candidate() {
-        let mut system = HRSystem::<KVStorage<Id, Job>, KVStorage<String, Candidate>>::default();
+        let mut system = HRSystem::new();
         let _ = system.register_candidate("test".to_string(), "test".to_string());
         // Can login with correct password
         let token = system.login(&"test".to_string(), &"test".to_string());
@@ -25,84 +25,151 @@ mod tests {
 
     #[test]
     fn candidate_process() {
-        let mut system = HRSystem::<KVStorage<Id, Job>, KVStorage<String, Candidate>>::default();
-        let job_posting_id = system.create_job_posting("Engineer".to_string());
+        let mut system = HRSystem::new();
+        let job_posting_id = system.create_job_posting("Engineer".to_string()).unwrap();
         let _ = system.register_candidate("test".to_string(), "test".to_string());
-        let token = system.login(&"test".to_string(), &"test".to_string());
+        let _ = system.register_candidate("test1".to_string(), "test".to_string());
+        let logged_in_user = system
+            .login(&"test1".to_string(), &"test".to_string())
+            .unwrap();
         assert!(system
-            .apply("test".to_string(), token.unwrap(), job_posting_id)
+            .apply(
+                &logged_in_user.user,
+                logged_in_user.token,
+                logged_in_user.user_id,
+                job_posting_id
+            )
             .is_ok());
         assert_eq!(
             system
-                .get_job_by_id(&job_posting_id)
+                .list_jobs()
+                .unwrap()
+                .first()
                 .unwrap()
                 .applicants
-                .get("test")
+                .get("test1")
                 .unwrap(),
-            &Candidacy::Applied(AppliedApplication {
-                applicant: "test".to_string()
-            })
+            &Candidacy::Applied(AppliedApplication)
         );
 
-        // Follows flow
-        assert!(system.approve("test".to_string(), job_posting_id).is_err());
+        // Must follow flow
+        assert!(system.approve("test1".to_string(), job_posting_id).is_err());
         assert_eq!(
             system
-                .get_job_by_id(&job_posting_id)
+                .list_jobs()
+                .unwrap()
+                .first()
                 .unwrap()
                 .applicants
-                .get("test")
+                .get("test1")
                 .unwrap(),
-            &Candidacy::Applied(AppliedApplication {
-                applicant: "test".to_string()
-            })
+            &Candidacy::Applied(AppliedApplication)
         );
 
-        // Follows flow
-        assert!(system.reject("test".to_string(), job_posting_id).is_ok());
+        // Must follow flow
+        assert!(system.reject("test1".to_string(), job_posting_id).is_ok());
         assert_eq!(
             system
-                .get_job_by_id(&job_posting_id)
+                .list_jobs()
+                .unwrap()
+                .first()
+                .unwrap()
+                .applicants
+                .get("test1")
+                .unwrap(),
+            &Candidacy::Applied(AppliedApplication)
+        );
+        // Reject Flow
+        assert!(system
+            .interview("test1".to_string(), job_posting_id)
+            .is_ok());
+        assert_eq!(
+            system
+                .list_jobs()
+                .unwrap()
+                .first()
+                .unwrap()
+                .applicants
+                .get("test1")
+                .unwrap(),
+            &Candidacy::Interviewed(InterviewedApplication)
+        );
+
+        assert!(system.reject("test1".to_string(), job_posting_id).is_ok());
+        assert_eq!(
+            system
+                .list_jobs()
+                .unwrap()
+                .first()
+                .unwrap()
+                .applicants
+                .get("test1")
+                .unwrap(),
+            &Candidacy::Rejected(RejectedApplication)
+        );
+
+        // Aprove Flow
+
+        let logged_in_user = system
+            .login(&"test".to_string(), &"test".to_string())
+            .unwrap();
+        assert!(system
+            .apply(
+                &logged_in_user.user,
+                logged_in_user.token,
+                logged_in_user.user_id,
+                job_posting_id
+            )
+            .is_ok());
+        assert_eq!(
+            system
+                .list_jobs()
+                .unwrap()
+                .first()
                 .unwrap()
                 .applicants
                 .get("test")
                 .unwrap(),
-            &Candidacy::Applied(AppliedApplication {
-                applicant: "test".to_string()
-            })
+            &Candidacy::Applied(AppliedApplication)
         );
-
         assert!(system.interview("test".to_string(), job_posting_id).is_ok());
         assert_eq!(
             system
-                .get_job_by_id(&job_posting_id)
+                .list_jobs()
+                .unwrap()
+                .first()
                 .unwrap()
                 .applicants
                 .get("test")
                 .unwrap(),
-            &Candidacy::Interviewed(InterviewedApplication {
-                applicant: "test".to_string()
-            })
+            &Candidacy::Interviewed(InterviewedApplication)
         );
 
         assert!(system.approve("test".to_string(), job_posting_id).is_ok());
         assert_eq!(
             system
-                .get_job_by_id(&job_posting_id)
+                .list_jobs()
+                .unwrap()
+                .first()
                 .unwrap()
                 .applicants
                 .get("test")
                 .unwrap(),
-            &Candidacy::Approved(ApprovedApplication {
-                applicant: "test".to_string()
-            })
+            &Candidacy::Approved(ApprovedApplication)
         );
 
-        let _ = system.register_candidate("test1".to_string(), "test".to_string());
-        let token = system.login(&"test1".to_string(), &"test".to_string());
-        println!("{:?}", token);
+        // Gets closed
+        let _ = system.register_candidate("test2".to_string(), "test".to_string());
+        let logged_in_user = system
+            .login(&"test2".to_string(), &"test".to_string())
+            .unwrap();
         assert!(system
-            .apply("test1".to_string(), token.unwrap(), job_posting_id)
+            .apply(
+                &"test2".to_string(),
+                logged_in_user.token,
+                logged_in_user.user_id,
+                job_posting_id
+            )
             .is_err());
     }
 }

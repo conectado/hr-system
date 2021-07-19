@@ -1,12 +1,7 @@
-use hrsystem::{Candidate, HRSystem, Id, Job, KVStorage, Token};
+use hrsystem::{HRSystem, LoggedUser};
 use lazy_static::lazy_static;
 use promptly::prompt;
 use std::sync::Mutex;
-
-struct LoggedUser {
-    user: String,
-    token: Token,
-}
 
 // This is of course not secure. But I'll not focus on this now.
 lazy_static! {
@@ -14,11 +9,11 @@ lazy_static! {
 }
 
 fn main() {
-    let mut system = HRSystem::<KVStorage<Id, Job>, KVStorage<String, Candidate>>::default();
+    let mut system = HRSystem::new();
     main_menu(&mut system);
 }
 
-fn main_menu(system: &mut HRSystem<KVStorage<Id, Job>, KVStorage<String, Candidate>>) {
+fn main_menu(system: &mut HRSystem) {
     loop {
         println!("Available Jobs:");
         print_jobs(&system);
@@ -47,7 +42,7 @@ fn main_menu(system: &mut HRSystem<KVStorage<Id, Job>, KVStorage<String, Candida
     }
 }
 
-fn job_apply(system: &mut HRSystem<KVStorage<Id, Job>, KVStorage<String, Candidate>>) {
+fn job_apply(system: &mut HRSystem) {
     let job_id = prompt("Chose what job to apply").expect("Error reading line");
 
     let temp_token = TOKEN.lock().expect("Single threaded");
@@ -55,50 +50,60 @@ fn job_apply(system: &mut HRSystem<KVStorage<Id, Job>, KVStorage<String, Candida
         .as_ref()
         .expect("Should have logged in at this point");
     if system
-        .apply(&logged_user.user, logged_user.token, job_id)
+        .apply(
+            &logged_user.user,
+            logged_user.token,
+            logged_user.user_id,
+            job_id,
+        )
         .is_err()
     {
-        println!("Already applied or closed");
+        println!("Already applied or closed\n");
     }
 }
 
-fn register(system: &mut HRSystem<KVStorage<Id, Job>, KVStorage<String, Candidate>>) {
+fn register(system: &mut HRSystem) {
     loop {
         let user = prompt("Insert Username").expect("Error reading line");
         // This should use password prompt but promptly doesn't have that.
         let pass = prompt("Insert Password").expect("Error reading line");
         if system.register_candidate(user, pass).is_err() {
-            println!("Inexistent user or incorrect password")
+            println!("Username already registered")
         } else {
             break;
         }
     }
 }
 
-fn job_menu(system: &mut HRSystem<KVStorage<Id, Job>, KVStorage<String, Candidate>>) {
-    let job_name = prompt("Enter job name").expect("Error reading line");
-    system.create_job_posting(job_name);
+fn job_menu(system: &mut HRSystem) {
+    loop {
+        let job_name = prompt("Enter job name").expect("Error reading line");
+        if system.create_job_posting(job_name).is_ok() {
+            break;
+        } else {
+            println!("Error creating job posting");
+        }
+    }
 }
 
-fn login_menu(system: &mut HRSystem<KVStorage<Id, Job>, KVStorage<String, Candidate>>) {
-    let mut token = None;
-    while token.is_none() {
+fn login_menu(system: &mut HRSystem) {
+    loop {
         let user = prompt("Insert Username").expect("Error reading line");
         // This should use password prompt but promptly doesn't have that.
         let pass = prompt("Insert Password").expect("Error reading line");
-        token = system.login(&user, &pass);
-        if let Some(token) = token {
+        let logged_user = system.login(&user, &pass);
+        if let Some(logged_user) = logged_user {
             *TOKEN
                 .lock()
-                .expect("This should be single-threaded for now") =
-                Some(LoggedUser { user, token });
+                .expect("This should be single-threaded for now") = Some(logged_user);
+            break;
         } else {
             println!("Inexistent user or incorrect password")
         }
     }
 }
 
-fn advance_process_menu(system: &mut HRSystem<KVStorage<Id, Job>, KVStorage<String, Candidate>>) {
+fn advance_process_menu(system: &mut HRSystem) {
     match print_options(&["Interview", "Approve", "Reject"]) {
         0 => interview(system),
         1 => approve(system),
@@ -108,7 +113,7 @@ fn advance_process_menu(system: &mut HRSystem<KVStorage<Id, Job>, KVStorage<Stri
 }
 
 // TODO: Dedup this --
-fn interview(system: &mut HRSystem<KVStorage<Id, Job>, KVStorage<String, Candidate>>) {
+fn interview(system: &mut HRSystem) {
     let candidate = prompt("Candidate to interview").expect("Read line error");
     let job_id = prompt("Job id of the interview").expect("Read line error");
     if system.interview(candidate, job_id).is_err() {
@@ -116,7 +121,7 @@ fn interview(system: &mut HRSystem<KVStorage<Id, Job>, KVStorage<String, Candida
     }
 }
 
-fn approve(system: &mut HRSystem<KVStorage<Id, Job>, KVStorage<String, Candidate>>) {
+fn approve(system: &mut HRSystem) {
     let candidate = prompt("Candidate to interview").expect("Read line error");
     let job_id = prompt("Job id of the interview").expect("Read line error");
     if system.approve(candidate, job_id).is_err() {
@@ -124,7 +129,7 @@ fn approve(system: &mut HRSystem<KVStorage<Id, Job>, KVStorage<String, Candidate
     }
 }
 
-fn reject(system: &mut HRSystem<KVStorage<Id, Job>, KVStorage<String, Candidate>>) {
+fn reject(system: &mut HRSystem) {
     let candidate = prompt("Candidate to interview").expect("Read line error");
     let job_id = prompt("Job id of the interview").expect("Read line error");
     if system.reject(candidate, job_id).is_err() {
@@ -150,14 +155,11 @@ fn print_options(options: &[&str]) -> usize {
     }
 }
 // TODO: Make this generic on storage
-fn print_jobs(system: &HRSystem<KVStorage<Id, Job>, KVStorage<String, Candidate>>) {
-    let jobs = system.list_jobs();
+fn print_jobs(system: &HRSystem) {
+    let jobs = system.list_jobs().expect("DB Connection problems");
     if jobs.is_empty() {
         println!("There are no Jobs posted yet");
     } else {
-        system
-            .list_jobs()
-            .iter()
-            .for_each(|(job_id, job)| println!("{}: {}", job_id, job));
+        jobs.iter().for_each(|job| println!("{}: {}", job.id, job));
     }
 }
